@@ -8,7 +8,7 @@ export interface DesignVersion {
   version_number: number;
   prompt: string;
   image_url: string;
-  type: 'ghost' | 'model';
+  type: 'ghost' | 'model' | 'variant';
   view: ViewType;
   created_at: string;
 }
@@ -27,11 +27,23 @@ export interface Design {
   technical_sketch_url?: string;
   inspiration_url?: string;
   render_url?: string;
+  // Ghost renders (siempre studio, fondo blanco)
   front_render_url?: string;
   back_render_url?: string;
   side_render_url?: string;
   closeup_render_url?: string;
+  // Legacy (compatibilidad hacia atrás)
   model_render_url?: string;
+  // Model renders - Studio, por vista
+  model_front_render_url?: string;
+  model_back_render_url?: string;
+  model_side_render_url?: string;
+  model_closeup_render_url?: string;
+  // Model renders - Outdoor, por vista
+  outdoor_model_front_render_url?: string;
+  outdoor_model_back_render_url?: string;
+  outdoor_model_side_render_url?: string;
+  outdoor_model_closeup_render_url?: string;
   prompt?: string;
   model_id?: string;
   view_mode: 'ghost' | 'model';
@@ -43,11 +55,13 @@ export interface Fabric {
   name: string;
   material: string;
   color: string;
-  texture_url: string;
+  texture_url?: string;
   normal_map_url?: string;
   roughness_map_url?: string;
   elasticity: number;
   finish: 'mate' | 'brillante' | 'satinado' | 'texturizado';
+  file_url?: string;
+  is_custom?: number;
 }
 
 export type Category = 'Core' | 'Moda' | 'Natación Deportiva' | 'Bodies' | 'Resort' | 'Activewear';

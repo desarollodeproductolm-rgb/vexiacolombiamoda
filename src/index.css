@@ -1,21 +1,39 @@
-@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400;1,500;1,600;1,700&family=Inter:wght@100..900&display=swap');
+@font-face {
+  font-family: "Visby CF";
+  src: url("/fonts/VisbyCF-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,100..900;1,100..900&display=swap');
 @import "tailwindcss";
 
 @theme {
+  --font-brand: "Visby CF", "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-serif: "Cormorant Garamond", serif;
-  
-  --color-brand: #E0FF00;
-  --color-bg-main: #0A0A0A;
-  --color-bg-secondary: #0D0D0D;
-  --color-bg-accent: #1A1A1A;
-  --color-text-main: #F2F2F2;
-  --color-text-dim: #777;
-  --color-text-muted: #555;
-  --color-border-main: #222;
-  --color-border-secondary: #333;
+  --font-serif: "Visby CF", "Inter", ui-sans-serif, system-ui, sans-serif;
+
+  /* Vexia Brand Palette */
+  --color-brand: #e5662d;           /* Pantone 165 C — Naranja Vexia */
+  --color-brand-hover: #c4541e;     /* Naranja oscuro para hover */
+  --color-cream: #f0e8dc;           /* Pantone 621 C — Crema Vexia */
+
+  /* Fondos oscuros */
+  --color-bg-main: #0a0a0a;
+  --color-bg-secondary: #111111;
+  --color-bg-accent: #1a1a1a;
+
+  /* Texto */
+  --color-text-main: #f0e8dc;       /* Crema sobre oscuro */
+  --color-text-dim: #9a8a7a;
+  --color-text-muted: #6b5a4e;
+
+  /* Bordes con tono cálido */
+  --color-border-main: #2a2218;
+  --color-border-secondary: #3a3028;
 }
 
 body {
-  @apply font-sans bg-[#0A0A0A] text-[#F2F2F2];
+  @apply font-sans bg-[#0a0a0a] text-[#f0e8dc];
 }

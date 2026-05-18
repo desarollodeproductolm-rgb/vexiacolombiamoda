@@ -101,6 +101,12 @@ for (const [col, def] of newDesignCols) {
   }
 }
 
+// Multi-file URL arrays (JSON) — new columns alongside legacy single-URL columns
+const designColumnsNow = (db.prepare("PRAGMA table_info(designs)").all() as any[]).map((c: any) => c.name);
+if (!designColumnsNow.includes("sketch_urls")) db.prepare("ALTER TABLE designs ADD COLUMN sketch_urls TEXT").run();
+if (!designColumnsNow.includes("inspiration_urls")) db.prepare("ALTER TABLE designs ADD COLUMN inspiration_urls TEXT").run();
+if (!designColumnsNow.includes("category")) {/* already exists */}
+
 const fabricColumns = (db.prepare("PRAGMA table_info(fabrics)").all() as any[]).map((c: any) => c.name);
 const newFabricCols: [string, string][] = [
   ["file_url", "TEXT"],
@@ -162,38 +168,110 @@ const getAI = () => {
 };
 
 // ── Prompt builders ────────────────────────────────────────────────────────────
+
+interface GhostPromptOptions {
+  sketchCount?: number;
+  inspirationCount?: number;
+  hasFrontRef?: boolean; // true → Phase 2 (documentation), false → Phase 1 (creation)
+}
+
 function buildGhostPrompt(
   userPrompt: string,
   view: string,
-  fabricColor = "#F5F5DC",
-  refMode: "sketch" | "inspiration" | "both" | "none" = "none"
+  options: GhostPromptOptions = {}
 ): string {
+  const { sketchCount = 0, inspirationCount = 0, hasFrontRef = false } = options;
+
   const viewMap: Record<string, string> = {
-    front: "vista frontal completa, frente de la prenda",
-    back: "vista trasera completa, parte posterior de la prenda",
-    side: "vista lateral, perfil izquierdo de la prenda",
-    closeup: "primer plano de detalle, costuras, textura y construcción del tejido",
+    front: "vista frontal completa — frente de la prenda",
+    back: "vista trasera completa — parte posterior de la prenda",
+    side: "vista lateral — perfil izquierdo de la prenda",
+    closeup: "primer plano de detalle — costuras, textura, herrajes y construcción del tejido",
   };
   const viewDesc = viewMap[view] || viewMap.front;
 
-  const refInstruction: Record<typeof refMode, string> = {
-    sketch: "Usa el boceto/CAD adjunto como guía exacta de silueta, cortes y construcción. Respeta fielmente la forma.",
-    inspiration: "Usa la imagen de inspiración adjunta como referencia de estilo, color y diseño. Desarrolla la prenda a partir de ella.",
-    both: "Usa el boceto adjunto como guía de silueta y construcción. Usa la imagen de inspiración como referencia de estilo y color.",
-    none: "Genera la prenda basándote únicamente en la descripción textual.",
-  };
+  // ── PHASE 2: TECHNICAL DOCUMENTATION (subsequent views anchored to front render) ──
+  if (hasFrontRef) {
+    return `DOCUMENTACIÓN TÉCNICA DE PRENDA — NO ES DISEÑO
 
-  return `Render 3D hiperrealista de prenda de moda, estilo CLO3D / ficha técnica profesional.
-Prenda: ${userPrompt}
+════ ATENCIÓN CRÍTICA ════
+ESTA ETAPA NO CREA NI MODIFICA DISEÑOS.
+La prenda ya fue aprobada y está visible en la IMAGEN DE REFERENCIA adjunta (vista frontal).
+Tu única tarea: documentarla técnicamente en la vista solicitada.
+
+════ REGLA ABSOLUTA — DISEÑO INMUTABLE ════
+NO modificar NINGÚN elemento:
+- Cortes, silueta y líneas de costura → INMUTABLES
+- Amarres, lazos, anillos, tirantes, cierres y herrajes → INMUTABLES
+- Color exacto y acabado del tejido → INMUTABLES
+- Accesorios y detalles decorativos → INMUTABLES
+- Proporciones y escala de la prenda → INMUTABLES
+
+════ CONSISTENCIA OBLIGATORIA ════
+La prenda que generes DEBE ser exactamente la misma prenda que aparece en la imagen de referencia.
+Mismos materiales, mismos detalles, misma identidad visual.
+Descripción original como contexto: "${userPrompt}"
+
+════ OBJETIVO ════
+Vista solicitada: ${viewDesc}
+Mostrar la MISMA prenda exacta en este ángulo específico.
+
+TÉCNICA: Ghost mannequin profesional (prenda flota sin cuerpo ni maniquí visibles)
+FONDO: blanco puro (#FFFFFF) — completamente limpio
+ILUMINACIÓN: neutra de estudio, difusa y uniforme
+CALIDAD: fotografía técnica e-commerce / catálogo de alta moda
+Sin texto, sin marcas de agua, sin accesorios externos.`;
+  }
+
+  // ── PHASE 1: CREATIVE CONSTRUCTION (initial render) ──
+  const hasSketch = sketchCount > 0;
+  const hasInspiration = inspirationCount > 0;
+
+  let refBlock = "Construir la prenda basándose exclusivamente en la descripción textual del diseñador.";
+  if (hasSketch || hasInspiration) {
+    const parts: string[] = [];
+    if (hasSketch) parts.push(`Se adjuntan ${sketchCount} boceto${sketchCount > 1 ? "s" : ""}/CAD que definen la arquitectura de la prenda. Respetar fielmente: silueta, cortes y construcción principal.`);
+    if (hasInspiration) parts.push(`Se adjuntan ${inspirationCount} imagen${inspirationCount > 1 ? "es" : ""} de inspiración que definen el estilo, color y estética deseados. Usarlas como referencia visual y de mood.`);
+    parts.push("PRIORIDAD: 1) Instrucciones del usuario → 2) Bocetos/CAD → 3) Imágenes de inspiración → 4) Criterio estético IA.");
+    refBlock = parts.join("\n");
+  }
+
+  return `CONSTRUCCIÓN DE REFERENCIA DE MODA — SWIMWEAR / ACTIVEWEAR
+
+════ DESCRIPCIÓN DEL DISEÑADOR ════
+${userPrompt}
+
+════ REFERENCIAS ════
+${refBlock}
+
+════ REGLAS DE INTERPRETACIÓN ════
+Si el usuario pide "exactamente igual" o "fiel al boceto" → reproducir sin reinterpretar.
+Si el usuario describe cambios, pide "inspirado en" o da libertad creativa → interpretar dentro del estilo descrito.
+Completar detalles constructivos coherentes cuando la descripción sea incompleta.
+NO agregar accesorios, elementos o detalles que contradigan la descripción.
+NO sobre-diseñar. Proporciones realistas y producibles.
+NO deformar anatomía ni escala de la prenda.
+
+════ TÉCNICA ════
+Ghost mannequin premium — prenda flota en el aire sin cuerpo ni maniquí visibles.
 Vista: ${viewDesc}
-Referencia: ${refInstruction[refMode]}
-Técnica: Ghost mannequin — la prenda flota en el aire sin cuerpo humano, sin maniquí visible, sin silueta de cuerpo.
-Fondo: blanco puro (#FFFFFF) o blanco hueso (#F5F5DC), completamente limpio, sin sombras en el fondo.
-Color base de tela: ${fabricColor} (hueso / beige).
-Iluminación: suave, de estudio neutro, difusa, sin brillos extremos.
-Calidad: fotografía técnica de moda profesional, catálogo de alta moda, render fotorrealista.
-Sin accesorios externos, sin texto, sin marcas de agua.
-Resolución y detalle: máxima calidad, bordes nítidos de la prenda.`;
+Fondo: blanco puro (#FFFFFF) o blanco hueso (#F5F5DC) — completamente limpio
+Iluminación: neutra de estudio, difusa, sin brillos extremos
+Calidad: render hiperrealista tipo CLO3D, catálogo de alta moda
+Sin texto, sin marcas de agua, sin accesorios externos.`;
+}
+
+function getOutdoorSceneByCategory(category = ""): string {
+  const scenes: Record<string, string> = {
+    "Swimwear": "playa tropical de arena blanca o piscina infinity de resort de lujo, luz natural dorada",
+    "Core": "playa de arena blanca o piscina infinity con vista al mar, luz dorada de tarde",
+    "Moda": "terraza de hotel boutique, arquitectura contemporánea o jardín de diseño premium",
+    "Natación Deportiva": "piscina olímpica o instalación acuática deportiva de alto rendimiento",
+    "Bodies": "interior minimalista premium con luz natural o estudio de fotografía editorial",
+    "Resort": "yate de lujo, resort tropical o terraza con panorámica al mar al atardecer",
+    "Activewear": "entorno urbano moderno, rooftop de diseño o instalación wellness premium",
+  };
+  return scenes[category] || "entorno natural elegante con luz natural dorada y composición editorial";
 }
 
 function buildModelPrompt(
@@ -201,51 +279,61 @@ function buildModelPrompt(
   modelName: string,
   view: string = "front",
   environment: "studio" | "outdoor" = "studio",
-  hasIdentityAnchor: boolean = false
+  hasIdentityAnchor: boolean = false,
+  category?: string
 ): string {
   const viewMap: Record<string, string> = {
-    front: "vista frontal completa, modelo de frente",
-    back: "vista trasera completa, modelo de espaldas, mostrando la parte posterior de la prenda",
-    side: "vista lateral, perfil de la modelo mostrando el lateral de la prenda",
-    closeup: "primer plano detallado del torso superior, mostrando detalles de la prenda en el cuerpo",
+    front: "vista frontal completa — modelo de frente, prenda visible al 100%",
+    back: "vista trasera completa — modelo de espaldas, parte posterior de la prenda",
+    side: "vista lateral — perfil de la modelo mostrando el lateral de la prenda",
+    closeup: "primer plano del torso — detalles de construcción, materiales y herrajes de la prenda",
   };
   const viewDesc = viewMap[view] || viewMap.front;
 
   const envDesc = environment === "studio"
-    ? "fondo de estudio neutro, gris claro o blanco, iluminación de estudio profesional difusa, imagen limpia y técnica"
-    : "ambiente natural exterior, luz natural suave y dorada, entorno elegante (jardín, playa, ciudad moderna), editorial de moda";
+    ? "fondo de estudio neutro — gris claro o blanco, iluminación de estudio profesional difusa, imagen limpia y técnica"
+    : `ambiente natural contextual: ${getOutdoorSceneByCategory(category)} — composición editorial fashion premium`;
 
   const identityBlock = hasIdentityAnchor
-    ? `════ IMAGEN 1 = PRENDA (DISEÑO BLOQUEADO — NO MODIFICAR NINGÚN DETALLE) ════
-La imagen ghost mannequin muestra el diseño EXACTO e INMUTABLE de la prenda.
-DEBES reproducir con absoluta fidelidad:
+    ? `════ IMAGEN 1: PRENDA (DISEÑO BLOQUEADO — INMUTABLE) ════
+La imagen ghost mannequin define el diseño EXACTO de la prenda.
+REPRODUCIR CON FIDELIDAD ABSOLUTA:
 - Todos los cortes, silueta y líneas de costura
-- Todos los amarres, lazos, anillos, tirantes, cierres y accesorios de la prenda
-- El color exacto y acabado del tejido
-- La posición y tipo de todos los elementos decorativos o funcionales
-PROHIBIDO añadir, quitar o modificar cualquier elemento de la prenda.
+- Todos los amarres, lazos, anillos, tirantes, cierres y herrajes
+- Color exacto y acabado del tejido
+- Posición de todos los elementos decorativos y funcionales
+PROHIBIDO: agregar, quitar o alterar cualquier elemento de la prenda.
 
-════ IMAGEN 2 = IDENTIDAD DE MODELO (BLOQUEADA — NO CAMBIAR) ════
-ESTA PERSONA específica DEBE aparecer en el resultado. No generes otro rostro.
-- Rostro: IDÉNTICO — mismos rasgos, ojos, nariz, boca
-- Tono de piel: IDÉNTICO
-- Cabello: IDÉNTICO — color, largo y textura
-Solo varía la pose para mostrar: ${viewDesc}.`
-    : `════ PRENDA (DISEÑO BLOQUEADO) ════
-La imagen ghost mannequin define el diseño EXACTO: cortes, amarres, accesorios y color. NO modificar.
+════ IMAGEN 2: IDENTIDAD DE MODELO (BLOQUEADA — INMUTABLE) ════
+ESTA PERSONA ESPECÍFICA debe aparecer. NO generar otro rostro.
+- Rostro → IDÉNTICO (mismos rasgos faciales, ojos, nariz, boca)
+- Tono de piel → IDÉNTICO
+- Cabello → IDÉNTICO (color, largo y textura)`
+    : `════ PRENDA (DISEÑO BLOQUEADO — INMUTABLE) ════
+La imagen ghost mannequin define el diseño EXACTO.
+REPRODUCIR CON FIDELIDAD ABSOLUTA: cortes, amarres, herrajes, accesorios, color y silueta.
+PROHIBIDO modificar ningún elemento.
 
 ════ MODELO ════
-${modelName} — mujer con complexión atlética y apariencia natural profesional.`;
+${modelName} — mujer profesional, complexión atlética natural.`;
 
-  return `FOTOGRAFÍA DE CATÁLOGO DE MODA — swimwear/activewear.
+  return `FOTOGRAFÍA DE CATÁLOGO — SWIMWEAR / ACTIVEWEAR PREMIUM
 
 ${identityBlock}
 
+════ FLEXIBILIDAD PERMITIDA — POSE Y ACTITUD ════
+La modelo PUEDE (dentro de la vista solicitada):
+- Usar pose natural y editorial que favorezca la prenda
+- Mostrar movimiento elegante (cabello, postura natural)
+- Transmitir actitud fashion premium — sofisticada y natural
+SIEMPRE garantizando que la prenda sea claramente visible en la vista "${view}".
+NUNCA ocultar partes de la prenda. NUNCA deformar la anatomía.
+
+════ VISTA Y ENTORNO ════
 VISTA REQUERIDA: ${viewDesc}
 ENTORNO: ${envDesc}
-POSE: natural y profesional que muestre la prenda completa en la vista "${view}".
-CALIDAD: fotografía profesional de catálogo de alta moda, alta resolución, iluminación perfecta.
-Sin texto, sin marcas de agua, sin elementos no presentes en la prenda original.`;
+CALIDAD: fotografía profesional de catálogo de alta moda — alta resolución, iluminación perfecta.
+Sin texto, sin marcas de agua, sin elementos ajenos a la prenda original.`;
 }
 
 // ── Image utilities ────────────────────────────────────────────────────────────
@@ -299,6 +387,7 @@ async function imagePartFromAny(source: string): Promise<any | null> {
 }
 
 const GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image-preview";
+const GEMINI_TEXT_MODEL  = "gemini-flash-latest";
 
 async function callGeminiImage(parts: any[]): Promise<string> {
   const ai = getAI();
@@ -610,11 +699,11 @@ async function startServer() {
       }
       const ai = new GoogleGenAI({ apiKey: key });
       const r = await ai.models.generateContent({
-        model: "gemini-2.0-flash",
+        model: GEMINI_TEXT_MODEL,
         contents: [{ role: "user", parts: [{ text: "Responde solo 'ok'" }] }],
       });
       const text = r.candidates?.[0]?.content?.parts?.[0]?.text || "";
-      res.json({ ok: true, model: "gemini-2.0-flash", response: text, imageModel: GEMINI_IMAGE_MODEL });
+      res.json({ ok: true, model: GEMINI_TEXT_MODEL, response: text, imageModel: GEMINI_IMAGE_MODEL });
     } catch (err: any) {
       const cause = err?.cause?.message || err?.cause?.code || "";
       res.json({ ok: false, error: err.message, cause, stack: err.stack?.split("\n").slice(0, 5) });
@@ -623,21 +712,55 @@ async function startServer() {
 
   // ── Generate ghost mannequin render ─────────────────────────────────────────
   app.post("/api/generate/ghost", async (req: any, res: any) => {
-    const { prompt, sketchUrl, inspirationUrl, view = "front", fabricColor } = req.body;
+    // Accept both single URLs (legacy) and arrays (new multi-file)
+    const {
+      prompt,
+      view = "front",
+      frontRenderUrl,
+      // Multi-file arrays (new)
+      sketchUrls = [] as string[],
+      inspirationUrls = [] as string[],
+      // Legacy single-URL fallbacks
+      sketchUrl,
+      inspirationUrl,
+    } = req.body;
     if (!prompt) return res.status(400).json({ error: "Falta el prompt." });
 
     try {
-      const sketchPath = resolveUploadPath(sketchUrl);
-      const inspirationPath = resolveUploadPath(inspirationUrl);
-      const refPaths: string[] = [];
-      let refMode: "sketch" | "inspiration" | "both" | "none" = "none";
+      // Merge legacy + array (dedupe)
+      const allSketchUrls: string[] = [...new Set([...(sketchUrl ? [sketchUrl] : []), ...sketchUrls])];
+      const allInspirationUrls: string[] = [...new Set([...(inspirationUrl ? [inspirationUrl] : []), ...inspirationUrls])];
 
-      if (sketchPath && inspirationPath) { refPaths.push(sketchPath, inspirationPath); refMode = "both"; }
-      else if (sketchPath) { refPaths.push(sketchPath); refMode = "sketch"; }
-      else if (inspirationPath) { refPaths.push(inspirationPath); refMode = "inspiration"; }
+      // Resolve all sketch paths
+      const sketchParts: any[] = allSketchUrls
+        .map(u => resolveUploadPath(u))
+        .filter(Boolean)
+        .map(p => imagePartFromPath(p!));
 
-      const fullPrompt = buildGhostPrompt(prompt, view, fabricColor, refMode);
-      const base64 = await generateImage(fullPrompt, refPaths);
+      // Resolve all inspiration paths
+      const inspirationParts: any[] = allInspirationUrls
+        .map(u => resolveUploadPath(u))
+        .filter(Boolean)
+        .map(p => imagePartFromPath(p!));
+
+      const hasFrontRef = !!frontRenderUrl && view !== "front";
+      const frontRefPart = hasFrontRef ? await imagePartFromAny(frontRenderUrl) : null;
+
+      const fullPrompt = buildGhostPrompt(prompt, view, {
+        sketchCount: sketchParts.length,
+        inspirationCount: inspirationParts.length,
+        hasFrontRef: !!frontRefPart,
+      });
+
+      // Order: text → front ref (anchor) → sketches → inspirations
+      const parts: any[] = [
+        { text: fullPrompt },
+        ...(frontRefPart ? [frontRefPart] : []),
+        ...sketchParts,
+        ...inspirationParts,
+      ];
+
+      const base64 = await callGeminiImage(parts);
       const url = saveBase64Image(base64, `ghost_${view}`);
       res.json({ url });
     } catch (err: any) {
@@ -655,6 +778,7 @@ async function startServer() {
       identityAnchorUrl,
       environment = "studio",
       view = "front",
+      category,
     } = req.body;
     if (!prompt) return res.status(400).json({ error: "Falta el prompt." });
 
@@ -670,7 +794,7 @@ async function startServer() {
         ...(identityPart ? [identityPart] : []),
       ];
 
-      const fullPrompt = buildModelPrompt(prompt, modelName || "modelo profesional", view, environment, hasIdentityAnchor);
+      const fullPrompt = buildModelPrompt(prompt, modelName || "modelo profesional", view, environment, hasIdentityAnchor, category);
       const base64 = await generateImageWithParts(fullPrompt, extraParts);
       const url = saveBase64Image(base64, `model_${environment}_${view}`);
       res.json({ url });
@@ -719,6 +843,45 @@ El resultado debe verse como la misma fotografía con el mismo encuadre, pose e 
     }
   });
 
+  // ── Edit single view with text instructions ─────────────────────────────────
+  app.post("/api/generate/edit", async (req: any, res: any) => {
+    const { baseRenderUrl, editInstructions, prompt, view = "front" } = req.body;
+    if (!baseRenderUrl || !editInstructions) {
+      return res.status(400).json({ error: "Faltan parámetros: baseRenderUrl y editInstructions son requeridos." });
+    }
+
+    const basePath = resolveUploadPath(baseRenderUrl);
+    if (!basePath) return res.status(400).json({ error: "Imagen base no encontrada en el servidor." });
+
+    try {
+      const editPrompt = `INSTRUCCIÓN DE EDICIÓN PUNTUAL — FOTOGRAFÍA DE MODA SWIMWEAR:
+
+Estás editando una imagen existente de una prenda de swimwear/activewear. La imagen adjunta es la REFERENCIA BASE que debes modificar.
+
+════ CAMBIOS SOLICITADOS ════
+${editInstructions}
+
+════ LO QUE NO DEBE CAMBIAR (INMUTABLE) ════
+- Cualquier elemento de la prenda NO mencionado en los cambios solicitados
+- El diseño general, silueta, cortes y construcción de la prenda
+- Si hay modelo humana: identidad, rostro, tono de piel, cabello, proporciones, pose
+- La iluminación, encuadre, ángulo y calidad fotográfica
+- El fondo y el ambiente de la foto
+
+Contexto de la prenda: ${prompt || "prenda de swimwear/activewear"}
+Vista: ${view}
+
+Resultado: imagen fotorrealista editada de alta calidad, con ÚNICAMENTE los cambios solicitados aplicados y todo lo demás idéntico a la referencia.`;
+
+      const base64 = await generateImage(editPrompt, [basePath]);
+      const url = saveBase64Image(base64, `edit_${view}`);
+      res.json({ url });
+    } catch (err: any) {
+      console.error("Edit generation error:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── Designs CRUD ─────────────────────────────────────────────────────────────
   app.get("/api/designs", (_req: any, res: any) => {
     const designs = db.prepare("SELECT * FROM designs ORDER BY created_at DESC").all();
@@ -726,10 +889,12 @@ El resultado debe verse como la misma fotografía con el mismo encuadre, pose e 
   });
 
   app.post("/api/designs", (req: any, res: any) => {
-    const { id, name, category, prompt, model_id, technical_sketch_url, inspiration_url } = req.body;
-    db.prepare(`INSERT INTO designs (id, name, category, prompt, model_id, view_mode, technical_sketch_url, inspiration_url)
-                VALUES (?, ?, ?, ?, ?, 'ghost', ?, ?)`)
-      .run(id, name, category, prompt, model_id, technical_sketch_url || null, inspiration_url || null);
+    const { id, name, category, prompt, model_id, technical_sketch_url, inspiration_url, sketch_urls, inspiration_urls } = req.body;
+    db.prepare(`INSERT INTO designs (id, name, category, prompt, model_id, view_mode, technical_sketch_url, inspiration_url, sketch_urls, inspiration_urls)
+                VALUES (?, ?, ?, ?, ?, 'ghost', ?, ?, ?, ?)`)
+      .run(id, name, category, prompt, model_id,
+        technical_sketch_url || null, inspiration_url || null,
+        sketch_urls || null, inspiration_urls || null);
     res.json({ success: true });
   });
 
@@ -745,6 +910,7 @@ El resultado debe verse como la misma fotografía con el mismo encuadre, pose e 
     const allowed = [
       "render_url", "front_render_url", "back_render_url", "side_render_url",
       "closeup_render_url", "model_render_url", "view_mode", "status", "prompt",
+      "technical_sketch_url", "inspiration_url", "sketch_urls", "inspiration_urls",
       // Per-view model renders — studio
       "model_front_render_url", "model_back_render_url", "model_side_render_url", "model_closeup_render_url",
       // Per-view model renders — outdoor
@@ -853,6 +1019,66 @@ El resultado debe verse como la misma fotografía con el mismo encuadre, pose e 
     const html = generateCatalogHTML(designs, models);
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.send(html);
+  });
+
+  // ── AI catalog editorial enrichment ──────────────────────────────────────────
+  app.post("/api/ai/enrich-catalog", async (req: any, res: any) => {
+    const { designs } = req.body as {
+      designs: Array<{ id: string; name: string; category: string; prompt?: string }>;
+    };
+    if (!designs || designs.length === 0) return res.status(400).json({ error: "No se enviaron diseños." });
+
+    try {
+      const ai = getAI();
+      const designList = designs
+        .map((d, i) =>
+          `${i + 1}. ID: "${d.id}" | Nombre: "${d.name}" | Categoría: "${d.category}"` +
+          (d.prompt ? ` | Descripción base: "${d.prompt}"` : "")
+        )
+        .join("\n");
+
+      const systemPrompt = `Eres el director creativo de VEXIA, marca de moda de lujo latinoamericana especializada en swimwear y activewear premium.
+Escribe contenido editorial de alta moda para el catálogo de la colección.
+
+Para cada diseño genera exactamente:
+- "tagline": frase corta poderosa (máx 7 palabras). Evocadora, precisa, sin clichés.
+- "description": prosa editorial elegante (30-50 palabras). Describe silueta, función y actitud. Nunca uses las palabras "perfecto", "lujo" ni "increíble".
+- "occasion": contexto de uso concreto (máx 5 palabras). Ej: "resort y playa", "natación de alto rendimiento".
+
+Responde ÚNICAMENTE con un JSON válido con este esquema:
+{
+  "enriched": {
+    "[id exacto del diseño]": {
+      "tagline": "...",
+      "description": "...",
+      "occasion": "..."
+    }
+  }
+}
+
+Diseños:
+${designList}`;
+
+      const r = await ai.models.generateContent({
+        model: GEMINI_TEXT_MODEL,
+        contents: [{ role: "user", parts: [{ text: systemPrompt }] }],
+        config: { responseMimeType: "application/json" } as any,
+      });
+
+      const rawText = r.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+      let parsed: any;
+      try {
+        parsed = JSON.parse(rawText);
+      } catch {
+        const match = rawText.match(/```(?:json)?\s*([\s\S]*?)```/);
+        try { parsed = match ? JSON.parse(match[1]) : { enriched: {} }; } catch { parsed = { enriched: {} }; }
+      }
+
+      res.json({ enriched: parsed.enriched || {} });
+    } catch (err: any) {
+      console.error("Enrich catalog error:", err);
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // ── Vite / Static ─────────────────────────────────────────────────────────────

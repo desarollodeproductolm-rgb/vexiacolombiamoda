@@ -8,7 +8,7 @@ export interface DesignVersion {
   version_number: number;
   prompt: string;
   image_url: string;
-  type: 'ghost' | 'model' | 'variant';
+  type: 'ghost' | 'model' | 'variant' | 'edit';
   view: ViewType;
   created_at: string;
 }
@@ -26,6 +26,8 @@ export interface Design {
   status: DesignStatus;
   technical_sketch_url?: string;
   inspiration_url?: string;
+  sketch_urls?: string;      // JSON array of multiple sketch/CAD URLs
+  inspiration_urls?: string; // JSON array of multiple inspiration URLs
   render_url?: string;
   // Ghost renders (siempre studio, fondo blanco)
   front_render_url?: string;

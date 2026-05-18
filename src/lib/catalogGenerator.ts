@@ -7,6 +7,12 @@ export type CatalogImageEntry = {
   type: 'ghost' | 'model' | 'outdoor';
 };
 
+export interface EnrichedDesignContent {
+  tagline: string;
+  description: string;
+  occasion: string;
+}
+
 export function getDesignCatalogImages(design: Design): CatalogImageEntry[] {
   const imgs: CatalogImageEntry[] = [];
 
@@ -54,37 +60,72 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return out;
 }
 
-/* Split prompt text into short editorial sentences */
-function editorialDesc(prompt: string): string {
-  if (!prompt) return '';
-  // Capitalize first letter, ensure period at end
-  const clean = prompt.trim().replace(/\.+$/, '');
-  return clean.charAt(0).toUpperCase() + clean.slice(1) + '.';
+function buildCategoryDivider(category: string, count: number): string {
+  const catCode = category.toUpperCase().substring(0, 3);
+  return `
+  <div class="page cat-divider">
+    <div class="cd-left">
+      <div class="cd-vertical">${esc(category.toUpperCase())}</div>
+    </div>
+    <div class="cd-right">
+      <div class="cd-top">
+        <div class="cd-label">línea</div>
+        <div class="cd-code">${catCode}</div>
+      </div>
+      <div class="cd-bottom">
+        <div class="cd-count">${count}</div>
+        <div class="cd-count-label">referencia${count !== 1 ? 's' : ''}</div>
+        <div class="cd-cat-name">${esc(category)}</div>
+      </div>
+    </div>
+  </div>`;
 }
 
-/* Build the per-design page(s) — returns one or more page divs as a string */
+function buildMoodPage(catalogTitle: string, catalogSeason: string): string {
+  return `
+  <div class="page mood-page">
+    <div class="mp-content">
+      <div class="mp-accent"></div>
+      <div class="mp-eyebrow">colección</div>
+      <h1 class="mp-title">${esc(catalogTitle)}</h1>
+      <div class="mp-season">${esc(catalogSeason)}</div>
+      <div class="mp-divider"></div>
+      <p class="mp-manifesto">Cada pieza nace de una tensión entre la disciplina técnica y la libertad del cuerpo en movimiento. Swimwear construido para quienes no distinguen entre rendimiento y expresión.</p>
+    </div>
+    <div class="mp-corner">vexia · almeja studio</div>
+  </div>`;
+}
+
 function buildDesignSpreads(
   design: Design,
   imgs: string[],
   idx: number,
+  enriched?: EnrichedDesignContent,
 ): string {
   if (imgs.length === 0) return '';
 
   const n    = String(idx + 1).padStart(2, '0');
   const name = esc(design.name);
   const cat  = esc(design.category);
-  const desc = editorialDesc(design.prompt || '');
+
+  const tagline    = enriched?.tagline    ? esc(enriched.tagline)    : '';
+  const desc       = enriched?.description ? esc(enriched.description) : (design.prompt ? esc(design.prompt.trim()) : '');
+  const occasion   = enriched?.occasion   ? esc(enriched.occasion)   : '';
 
   const img = (src: string, alt = name, cls = '') =>
-    `<img src="${esc(src)}" alt="${alt}" loading="lazy" class="${cls}"/>`;
+    `<img src="${esc(src)}" alt="${alt}" class="${cls}"/>`;
 
   const infoPanel = `
     <div class="info-panel">
-      <div class="ip-num">${n}</div>
+      <div class="ip-header">
+        <div class="ip-num">${n}</div>
+        <div class="ip-cat">${cat}</div>
+      </div>
       <h2 class="ip-name">${name}</h2>
-      <div class="ip-cat">${cat}</div>
+      ${tagline ? `<div class="ip-tagline">${tagline}</div>` : ''}
       <div class="ip-line"></div>
-      ${desc ? `<p class="ip-desc">${esc(desc)}</p>` : ''}
+      ${desc ? `<p class="ip-desc">${desc}</p>` : ''}
+      ${occasion ? `<div class="ip-occasion"><span class="ip-occ-label">Uso ·</span> ${occasion}</div>` : ''}
       <div class="ip-details">
         <div class="ip-detail-row"><span class="ip-detail-label">Referencia</span><span class="ip-detail-val">${name}</span></div>
         <div class="ip-detail-row"><span class="ip-detail-label">Línea</span><span class="ip-detail-val">${cat}</span></div>
@@ -113,10 +154,8 @@ function buildDesignSpreads(
     </div>`);
 
   } else {
-    // First page: large main + info + up to 2 secondary images
     const firstSecondary = imgs.slice(1, 3);
     const remaining = imgs.slice(3);
-
     const secCells = firstSecondary.map(u => `<div class="ms-cell">${img(u)}</div>`).join('');
 
     pages.push(`
@@ -128,7 +167,6 @@ function buildDesignSpreads(
       </div>
     </div>`);
 
-    // Additional pages: grids of up to 6 images
     if (remaining.length > 0) {
       const groups = chunk(remaining, 6);
       groups.forEach((group, gi) => {
@@ -159,6 +197,7 @@ export function generateCatalogHTML(
   imageSelections: Record<string, string[]>,
   catalogTitle: string,
   catalogSeason: string,
+  enriched: Record<string, EnrichedDesignContent> = {},
 ): string {
   const dateStr = new Date().toLocaleDateString('es-CO', {
     year: 'numeric', month: 'long', day: 'numeric',
@@ -169,14 +208,26 @@ export function generateCatalogHTML(
     const firstImg = (imageSelections[d.id] || [])[0] || '';
     return `
     <div class="it">
-      <div class="it-img">${firstImg ? `<img src="${esc(firstImg)}" alt="${esc(d.name)}" loading="lazy"/>` : ''}</div>
+      <div class="it-img">${firstImg ? `<img src="${esc(firstImg)}" alt="${esc(d.name)}"/>` : ''}</div>
       <div class="it-label">${esc(d.name)}</div>
     </div>`;
   }).join('');
 
-  const spreads = selectedDesigns.map((design, idx) =>
-    buildDesignSpreads(design, imageSelections[design.id] || [], idx)
-  ).join('\n');
+  // Group designs by category and build spreads with dividers
+  let spreads = '';
+  let lastCategory = '';
+  const categoryCounts: Record<string, number> = {};
+  for (const d of selectedDesigns) {
+    categoryCounts[d.category] = (categoryCounts[d.category] || 0) + 1;
+  }
+
+  selectedDesigns.forEach((design, idx) => {
+    if (design.category !== lastCategory) {
+      spreads += buildCategoryDivider(design.category, categoryCounts[design.category]);
+      lastCategory = design.category;
+    }
+    spreads += buildDesignSpreads(design, imageSelections[design.id] || [], idx, enriched[design.id]);
+  });
 
   return `<!DOCTYPE html>
 <html lang="es">
@@ -185,7 +236,7 @@ export function generateCatalogHTML(
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>${esc(catalogTitle)} — Vexia ${esc(catalogSeason)}</title>
 <style>
-:root{--or:#e5662d;--bk:#000;--cr:#f0e8dc;--crd:#ede5d8;--gy:#6b5a4e;--wh:#fff;--gy2:#9a8a7a}
+:root{--or:#e5662d;--bk:#000;--cr:#f0e8dc;--crd:#ede5d8;--gy:#6b5a4e;--wh:#fff;--gy2:#9a8a7a;--or2:#f0803a}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--cr);color:var(--bk)}
 img{display:block;width:100%;height:100%;object-fit:contain;background:var(--crd)}
@@ -205,6 +256,30 @@ img{display:block;width:100%;height:100%;object-fit:contain;background:var(--crd
 .cv-season{font-size:12px;color:var(--or);letter-spacing:.25em;text-transform:uppercase;margin-top:10px}
 .cv-date{font-size:9px;color:rgba(255,255,255,.15);letter-spacing:.08em;margin-top:48px}
 
+/* MOOD PAGE */
+.mood-page{background:var(--bk);min-height:210mm;display:flex;flex-direction:column;justify-content:center;padding:60px 72px;position:relative}
+.mp-content{max-width:560px}
+.mp-accent{width:3px;height:56px;background:var(--or);margin-bottom:32px}
+.mp-eyebrow{font-size:9px;letter-spacing:.45em;text-transform:uppercase;color:rgba(255,255,255,.25);margin-bottom:14px}
+.mp-title{font-size:52px;font-weight:900;color:var(--wh);letter-spacing:-1.5px;line-height:1;margin-bottom:10px}
+.mp-season{font-size:13px;color:var(--or);letter-spacing:.3em;text-transform:uppercase;margin-bottom:28px}
+.mp-divider{width:36px;height:1px;background:rgba(255,255,255,.15);margin-bottom:28px}
+.mp-manifesto{font-size:13px;line-height:1.9;color:rgba(255,255,255,.5);max-width:420px;font-style:italic}
+.mp-corner{position:absolute;bottom:40px;right:48px;font-size:8px;letter-spacing:.3em;text-transform:uppercase;color:rgba(255,255,255,.1)}
+
+/* CATEGORY DIVIDER */
+.cat-divider{display:grid;grid-template-columns:2fr 3fr;min-height:210mm}
+.cd-left{background:var(--bk);display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative}
+.cd-vertical{font-size:72px;font-weight:900;color:rgba(255,255,255,.06);text-transform:uppercase;writing-mode:vertical-rl;text-orientation:mixed;letter-spacing:.1em;line-height:1;transform:rotate(180deg)}
+.cd-right{background:var(--or);display:flex;flex-direction:column;justify-content:space-between;padding:52px}
+.cd-top{}
+.cd-label{font-size:9px;letter-spacing:.4em;text-transform:uppercase;color:rgba(0,0,0,.35);margin-bottom:8px}
+.cd-code{font-size:100px;font-weight:900;color:rgba(0,0,0,.12);line-height:1;letter-spacing:-3px}
+.cd-bottom{}
+.cd-count{font-size:88px;font-weight:900;color:var(--bk);line-height:1;letter-spacing:-3px}
+.cd-count-label{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:rgba(0,0,0,.45);margin-top:4px}
+.cd-cat-name{font-size:22px;font-weight:700;color:var(--bk);letter-spacing:-.3px;margin-top:16px}
+
 /* INTRO */
 .intro{display:grid;grid-template-columns:1fr 1fr;min-height:210mm}
 .in-l{background:var(--or);display:flex;flex-direction:column;justify-content:flex-end;padding:48px}
@@ -218,16 +293,20 @@ img{display:block;width:100%;height:100%;object-fit:contain;background:var(--crd
 
 /* INFO PANEL */
 .info-panel{display:flex;flex-direction:column;height:100%;padding:36px}
-.ip-num{font-size:56px;font-weight:900;color:rgba(0,0,0,.04);line-height:1;letter-spacing:-2px;margin-bottom:-6px}
-.ip-name{font-size:22px;font-weight:700;letter-spacing:-.4px;color:var(--bk);line-height:1.1}
-.ip-cat{font-size:9px;letter-spacing:.3em;text-transform:uppercase;color:var(--or);margin-top:6px}
-.ip-line{width:28px;height:2px;background:var(--or);margin:18px 0}
-.ip-desc{font-size:10.5px;line-height:1.8;color:var(--gy);margin-bottom:20px}
+.ip-header{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:4px}
+.ip-num{font-size:42px;font-weight:900;color:rgba(0,0,0,.05);line-height:1;letter-spacing:-2px}
+.ip-cat{font-size:8px;letter-spacing:.3em;text-transform:uppercase;color:var(--or)}
+.ip-name{font-size:20px;font-weight:700;letter-spacing:-.4px;color:var(--bk);line-height:1.15;margin-bottom:8px}
+.ip-tagline{font-size:11px;font-style:italic;color:var(--gy);letter-spacing:.02em;line-height:1.5;margin-bottom:4px}
+.ip-line{width:28px;height:2px;background:var(--or);margin:16px 0}
+.ip-desc{font-size:10px;line-height:1.85;color:var(--gy);margin-bottom:14px}
+.ip-occasion{font-size:8.5px;letter-spacing:.12em;text-transform:uppercase;color:rgba(0,0,0,.3);margin-bottom:6px}
+.ip-occ-label{color:var(--or);font-weight:600}
 .ip-details{margin-top:auto;border-top:1px solid rgba(0,0,0,.06);padding-top:14px;display:flex;flex-direction:column;gap:8px}
 .ip-detail-row{display:flex;justify-content:space-between;align-items:baseline}
 .ip-detail-label{font-size:8px;letter-spacing:.2em;text-transform:uppercase;color:var(--gy2)}
 .ip-detail-val{font-size:10px;font-weight:600;color:var(--bk)}
-.ip-footer{font-size:8px;letter-spacing:.2em;text-transform:uppercase;color:rgba(0,0,0,.13);margin-top:20px;padding-top:12px;border-top:1px solid rgba(0,0,0,.05)}
+.ip-footer{font-size:8px;letter-spacing:.2em;text-transform:uppercase;color:rgba(0,0,0,.13);margin-top:18px;padding-top:12px;border-top:1px solid rgba(0,0,0,.05)}
 
 /* SINGLE SPREAD */
 .spread-single{display:grid;grid-template-columns:3fr 2fr;min-height:210mm}
@@ -287,9 +366,30 @@ img{display:block;width:100%;height:100%;object-fit:contain;background:var(--crd
 /* PRINT */
 @media print{
   .toolbar{display:none!important}
-  body{padding:0!important;background:#fff}
-  .page{width:100%;min-height:100vh;page-break-after:always}
-  .cover,.in-l,.back-cover{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  body{padding:0!important;margin:0;background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  /* Fixed page size — prevents images from splitting across pages */
+  .page{
+    width:297mm;
+    height:210mm;
+    min-height:unset;
+    overflow:hidden;
+    page-break-after:always;
+    break-after:page;
+    page-break-inside:avoid;
+    break-inside:avoid;
+    box-shadow:none;
+    margin:0;
+  }
+  /* All paged layouts: fill exactly 210mm */
+  .cover,.intro,.mood-page,.cat-divider,
+  .spread-single,.spread-double,.spread-main,
+  .spread-gallery,.back-cover{height:210mm;min-height:unset}
+  /* Color backgrounds must print */
+  .cover,.cv-l,.cv-r,
+  .mood-page,
+  .cat-divider .cd-left,.cat-divider .cd-right,
+  .intro .in-l,
+  .back-cover{-webkit-print-color-adjust:exact;print-color-adjust:exact}
   @page{size:A4 landscape;margin:0}
 }
 @media screen{
@@ -319,6 +419,9 @@ img{display:block;width:100%;height:100%;object-fit:contain;background:var(--crd
   </div>
 </div>
 
+<!-- MOOD PAGE -->
+${buildMoodPage(catalogTitle, catalogSeason)}
+
 <!-- INTRO -->
 <div class="page intro">
   <div class="in-l">
@@ -331,7 +434,7 @@ img{display:block;width:100%;height:100%;object-fit:contain;background:var(--crd
   </div>
 </div>
 
-<!-- DESIGN SPREADS -->
+<!-- DESIGN SPREADS WITH CATEGORY DIVIDERS -->
 ${spreads}
 
 <!-- BACK COVER -->

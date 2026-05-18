@@ -8,5 +8,4 @@ coverage/
 !.env.example
 
 # Local generated images and assets
-uploads/
 Stitch/

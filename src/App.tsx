@@ -243,6 +243,10 @@ export default function App() {
   const [variantViewSelections, setVariantViewSelections] = useState<Set<ViewType>>(new Set(['front']));
   const [variantProgress, setVariantProgress] = useState<{ current: number; total: number } | null>(null);
 
+  // Inline rename
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [editingName, setEditingName] = useState('');
+
   // Mobile UI
   const [isMobileDrawerOpen, setMobileDrawerOpen] = useState(false);
 
@@ -841,6 +845,19 @@ export default function App() {
       if (selectedModelId === modelId) setSelectedModelId(null);
       await fetchModels();
     } catch (err: any) { alert('No se pudo eliminar: ' + err.message); }
+  };
+
+  const handleRenameDesign = async () => {
+    if (!selectedDesign || !editingName.trim()) return;
+    await apiPatchDesign(selectedDesign.id, { name: editingName.trim() } as any);
+    setIsEditingName(false);
+    await fetchDesigns();
+  };
+
+  const handleChangeDesignModel = async (modelId: string) => {
+    if (!selectedDesign || selectedDesign.model_id === modelId) return;
+    await apiPatchDesign(selectedDesign.id, { model_id: modelId } as any);
+    await fetchDesigns();
   };
 
   const handleDeleteDesign = async (design: Design, e?: MouseEvent) => {
@@ -1747,7 +1764,35 @@ export default function App() {
                 </div>
                 <div className="mb-8">
                   <p className="text-[9px] text-text-dim uppercase tracking-[0.3em] font-black italic mb-3 hidden md:block">Expediente de Proyecto</p>
-                  <h2 className="text-2xl font-serif italic text-white tracking-tight leading-tight">{selectedDesign.name}</h2>
+                  {isEditingName ? (
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={editingName}
+                        onChange={e => setEditingName(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') handleRenameDesign(); if (e.key === 'Escape') setIsEditingName(false); }}
+                        autoFocus
+                        className="flex-1 bg-bg-main border border-brand p-2 text-xl font-serif italic text-white outline-none tracking-tight"
+                      />
+                      <button onClick={handleRenameDesign} className="p-1.5 text-brand hover:text-white transition-colors" title="Guardar">
+                        <CheckCircle2 size={14} />
+                      </button>
+                      <button onClick={() => setIsEditingName(false)} className="p-1.5 text-text-muted hover:text-white transition-colors" title="Cancelar">
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 group/name">
+                      <h2 className="text-2xl font-serif italic text-white tracking-tight leading-tight">{selectedDesign.name}</h2>
+                      <button
+                        onClick={() => { setEditingName(selectedDesign.name); setIsEditingName(true); }}
+                        className="opacity-0 group-hover/name:opacity-100 transition-opacity p-1 text-text-muted hover:text-brand"
+                        title="Renombrar referencia"
+                      >
+                        <Pencil size={10} />
+                      </button>
+                    </div>
+                  )}
                   <div className="mt-3 flex gap-2 flex-wrap">
                     <span className="text-[8px] px-2 py-0.5 border border-border-secondary text-text-muted uppercase tracking-widest">{selectedDesign.category}</span>
                     <span className="text-[8px] px-2 py-0.5 border border-brand text-brand uppercase tracking-widest">Ref. Maestra</span>
@@ -2072,22 +2117,25 @@ export default function App() {
                       {models.map((model) => (
                         <div
                           key={model.id}
-                          className={cn("group/det flex flex-col items-center flex-shrink-0 transition-opacity relative",
-                            selectedDesign.model_id === model.id ? "opacity-100" : "opacity-30")}
+                          onClick={() => handleChangeDesignModel(model.id)}
+                          className={cn("group/det flex flex-col items-center flex-shrink-0 transition-opacity relative cursor-pointer",
+                            selectedDesign.model_id === model.id ? "opacity-100" : "opacity-30 hover:opacity-70")}
                         >
                           <div className={cn("w-14 h-14 rounded-full border-2 bg-bg-main p-1 mb-2 relative",
-                            selectedDesign.model_id === model.id ? "border-brand" : "border-border-secondary")}>
+                            selectedDesign.model_id === model.id ? "border-brand" : "border-border-secondary group-hover/det:border-brand/50")}>
                             <img src={model.preview_url} className="w-full h-full object-cover rounded-full" alt={model.name} referrerPolicy="no-referrer" />
                             <button
-                              onClick={(e) => handleDeleteModel(model.id, e)}
+                              onClick={(e) => { e.stopPropagation(); handleDeleteModel(model.id, e); }}
                               className="absolute -top-1 -right-1 bg-red-900 text-red-300 rounded-full p-0.5 opacity-0 group-hover/det:opacity-100 transition-opacity"
                             >
                               <X size={8} />
                             </button>
                           </div>
                           <p className="text-[7px] text-center text-text-main font-bold max-w-[60px] truncate">{model.name}</p>
-                          {selectedDesign.model_id === model.id && (
+                          {selectedDesign.model_id === model.id ? (
                             <p className="text-[6px] text-center text-brand uppercase tracking-tighter mt-1 font-black">Maestra</p>
+                          ) : (
+                            <p className="text-[6px] text-center text-text-muted uppercase tracking-tighter mt-1 font-black opacity-0 group-hover/det:opacity-100 transition-opacity">Cambiar</p>
                           )}
                         </div>
                       ))}

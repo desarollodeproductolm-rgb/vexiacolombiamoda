@@ -748,6 +748,7 @@ Resultado: imagen fotorrealista editada de alta calidad, con ÚNICAMENTE los cam
   app.patch("/api/designs/:id", async (req: any, res: any) => {
     const { id } = req.params;
     const allowed = [
+      "name", "model_id",
       "render_url", "front_render_url", "back_render_url", "side_render_url",
       "closeup_render_url", "model_render_url", "view_mode", "status", "prompt",
       "technical_sketch_url", "inspiration_url", "sketch_urls", "inspiration_urls",

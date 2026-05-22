@@ -1,7 +1,6 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
-import { fileURLToPath } from "url";
 import cors from "cors";
 import multer from "multer";
 import { GoogleGenAI } from "@google/genai";
@@ -9,9 +8,6 @@ import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
 
 dotenv.config();
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // ── Supabase (server-side, service role bypasses RLS) ─────────────────────────
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL!;
@@ -21,7 +17,7 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   process.exit(1);
 }
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
-const BUCKET = "uploads";
+const BUCKET = "uploads"; // bucket público en Supabase Storage
 
 // ── Multer — memoria (los archivos van a Supabase Storage, no al disco local) ──
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 30 * 1024 * 1024 } });
@@ -141,7 +137,7 @@ function getOutdoorSceneByCategory(category = ""): string {
 }
 
 function buildModelPrompt(
-  userPrompt: string,
+  _userPrompt: string,
   modelName: string,
   view: string = "front",
   environment: "studio" | "outdoor" = "studio",
@@ -370,14 +366,6 @@ async function generateCatalogHTML(designs: any[], allModels: any[]): Promise<st
 </div>`;
   }).join("\n");
 
-  const indexRows = richDesigns.map((d: any, i: number) => `
-  <div class="idx-row">
-    <span class="idx-num">${String(i + 1).padStart(2, "0")}</span>
-    <span class="idx-name">${d.name}</span>
-    <span class="idx-cat">${d.category}</span>
-    <span class="idx-dots">···</span>
-    <span class="idx-pg">${i + 1}</span>
-  </div>`).join("");
 
   const indexPage = `
 <div class="page index-page">
@@ -520,7 +508,7 @@ async function startServer() {
     if (!req.file) return res.status(400).json({ error: "No se recibió archivo." });
     try {
       const ext = path.extname(req.file.originalname).toLowerCase() || ".jpg";
-      const filename = `${Date.now()}-${Math.random().toString(36).substr(2, 6)}${ext}`;
+      const filename = `${Date.now()}-${Math.random().toString(36).substring(2, 8)}${ext}`;
       const url = await uploadBuffer(req.file.buffer, filename, req.file.mimetype);
       res.json({ url });
     } catch (err: any) {

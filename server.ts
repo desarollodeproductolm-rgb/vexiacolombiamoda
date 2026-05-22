@@ -1,162 +1,30 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
-import Database from "better-sqlite3";
 import { fileURLToPath } from "url";
 import cors from "cors";
 import multer from "multer";
-import fs from "fs";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
+import { createClient } from "@supabase/supabase-js";
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const UPLOADS_DIR = path.join(process.cwd(), "uploads");
-if (!fs.existsSync(UPLOADS_DIR)) fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-
-const db = new Database("swimtech.db");
-console.log("Database connected.");
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS designs (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    category TEXT NOT NULL,
-    status TEXT DEFAULT 'sketch',
-    technical_sketch_url TEXT,
-    inspiration_url TEXT,
-    render_url TEXT,
-    front_render_url TEXT,
-    back_render_url TEXT,
-    side_render_url TEXT,
-    closeup_render_url TEXT,
-    model_render_url TEXT,
-    prompt TEXT,
-    model_id TEXT,
-    view_mode TEXT DEFAULT 'ghost',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
-
-  CREATE TABLE IF NOT EXISTS fabrics (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    material TEXT,
-    color TEXT,
-    texture_url TEXT,
-    normal_map_url TEXT,
-    roughness_map_url TEXT,
-    elasticity REAL,
-    finish TEXT,
-    file_url TEXT,
-    is_custom INTEGER DEFAULT 0
-  );
-
-  CREATE TABLE IF NOT EXISTS models (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    preview_url TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS design_versions (
-    id TEXT PRIMARY KEY,
-    design_id TEXT NOT NULL,
-    version_number INTEGER NOT NULL,
-    prompt TEXT,
-    image_url TEXT,
-    type TEXT DEFAULT 'ghost',
-    view TEXT DEFAULT 'front',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(design_id) REFERENCES designs(id)
-  );
-`);
-
-// ── Migrations ────────────────────────────────────────────────────────────────
-const designColumns = (db.prepare("PRAGMA table_info(designs)").all() as any[]).map((c: any) => c.name);
-const newDesignCols: [string, string][] = [
-  ["model_id", "TEXT"],
-  ["view_mode", "TEXT DEFAULT 'ghost'"],
-  ["render_url", "TEXT"],
-  ["front_render_url", "TEXT"],
-  ["back_render_url", "TEXT"],
-  ["side_render_url", "TEXT"],
-  ["closeup_render_url", "TEXT"],
-  ["model_render_url", "TEXT"],
-  // Per-view model renders — studio
-  ["model_front_render_url", "TEXT"],
-  ["model_back_render_url", "TEXT"],
-  ["model_side_render_url", "TEXT"],
-  ["model_closeup_render_url", "TEXT"],
-  // Per-view model renders — outdoor
-  ["outdoor_model_front_render_url", "TEXT"],
-  ["outdoor_model_back_render_url", "TEXT"],
-  ["outdoor_model_side_render_url", "TEXT"],
-  ["outdoor_model_closeup_render_url", "TEXT"],
-];
-for (const [col, def] of newDesignCols) {
-  if (!designColumns.includes(col)) {
-    db.prepare(`ALTER TABLE designs ADD COLUMN ${col} ${def}`).run();
-  }
+// ── Supabase (server-side, service role bypasses RLS) ─────────────────────────
+const SUPABASE_URL = process.env.VITE_SUPABASE_URL!;
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+  console.error("FATAL: Faltan VITE_SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY en las variables de entorno.");
+  process.exit(1);
 }
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+const BUCKET = "uploads";
 
-// Multi-file URL arrays (JSON) — new columns alongside legacy single-URL columns
-const designColumnsNow = (db.prepare("PRAGMA table_info(designs)").all() as any[]).map((c: any) => c.name);
-if (!designColumnsNow.includes("sketch_urls")) db.prepare("ALTER TABLE designs ADD COLUMN sketch_urls TEXT").run();
-if (!designColumnsNow.includes("inspiration_urls")) db.prepare("ALTER TABLE designs ADD COLUMN inspiration_urls TEXT").run();
-if (!designColumnsNow.includes("category")) {/* already exists */}
-
-const fabricColumns = (db.prepare("PRAGMA table_info(fabrics)").all() as any[]).map((c: any) => c.name);
-const newFabricCols: [string, string][] = [
-  ["file_url", "TEXT"],
-  ["is_custom", "INTEGER DEFAULT 0"],
-];
-for (const [col, def] of newFabricCols) {
-  if (!fabricColumns.includes(col)) {
-    db.prepare(`ALTER TABLE fabrics ADD COLUMN ${col} ${def}`).run();
-  }
-}
-
-const versionColumns = (db.prepare("PRAGMA table_info(design_versions)").all() as any[]).map((c: any) => c.name);
-if (!versionColumns.includes("type")) {
-  db.prepare("ALTER TABLE design_versions ADD COLUMN type TEXT DEFAULT 'ghost'").run();
-}
-if (!versionColumns.includes("view")) {
-  db.prepare("ALTER TABLE design_versions ADD COLUMN view TEXT DEFAULT 'front'").run();
-}
-
-// ── Clean up blob URLs stored by old model upload bug ─────────────────────────
-// Old code stored blob: URLs which are browser-session-only and useless in DB
-db.prepare("DELETE FROM models WHERE preview_url LIKE 'blob:%'").run();
-
-// ── Seed data ─────────────────────────────────────────────────────────────────
-const modelsCount = db.prepare("SELECT count(*) as count FROM models").get() as any;
-if (modelsCount.count === 0) {
-  const insertModel = db.prepare("INSERT INTO models (id, name, preview_url) VALUES (?, ?, ?)");
-  // preview_url apunta a public/models/ — coloca aquí las fotos reales de las modelos
-  insertModel.run("m1", "Modelo Latina 1 — Cabello oscuro, Talla S", "/models/latina-1.jpg");
-  insertModel.run("m2", "Modelo Rubia 1 — Cabello rubio, Talla S", "/models/rubia-1.jpg");
-}
-
-const fabricsCount = db.prepare("SELECT count(*) as count FROM fabrics").get() as any;
-if (fabricsCount.count === 0) {
-  const ins = db.prepare("INSERT INTO fabrics (id, name, material, color, texture_url, elasticity, finish, is_custom) VALUES (?, ?, ?, ?, ?, ?, ?, 0)");
-  ins.run("f1", "Lycra Mate Premium", "Poliamida/Elastano", "#1a1a1a", "", 0.85, "mate");
-  ins.run("f2", "Jacquard Texturizado", "Poliéster Reciclado", "#e5e5e5", "", 0.40, "texturizado");
-  ins.run("f3", "Powernet Control", "Nailon Reforzado", "#d1d5db", "", 0.20, "mate");
-  ins.run("f4", "Satin Swim Luxe", "Microfibra Brillante", "#c9d1d9", "", 0.70, "satinado");
-}
-
-// ── Multer storage ─────────────────────────────────────────────────────────────
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
-  filename: (_req, file, cb) => {
-    const unique = `${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
-    cb(null, `${unique}-${file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_")}`);
-  },
-});
-const upload = multer({ storage, limits: { fileSize: 30 * 1024 * 1024 } });
+// ── Multer — memoria (los archivos van a Supabase Storage, no al disco local) ──
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 30 * 1024 * 1024 } });
 
 // ── Gemini AI client ───────────────────────────────────────────────────────────
 const getAI = () => {
@@ -172,7 +40,7 @@ const getAI = () => {
 interface GhostPromptOptions {
   sketchCount?: number;
   inspirationCount?: number;
-  hasFrontRef?: boolean; // true → Phase 2 (documentation), false → Phase 1 (creation)
+  hasFrontRef?: boolean;
 }
 
 function buildGhostPrompt(
@@ -190,7 +58,6 @@ function buildGhostPrompt(
   };
   const viewDesc = viewMap[view] || viewMap.front;
 
-  // ── PHASE 2: TECHNICAL DOCUMENTATION (subsequent views anchored to front render) ──
   if (hasFrontRef) {
     return `DOCUMENTACIÓN TÉCNICA DE PRENDA — NO ES DISEÑO
 
@@ -223,7 +90,6 @@ CALIDAD: fotografía técnica e-commerce / catálogo de alta moda
 Sin texto, sin marcas de agua, sin accesorios externos.`;
   }
 
-  // ── PHASE 1: CREATIVE CONSTRUCTION (initial render) ──
   const hasSketch = sketchCount > 0;
   const hasInspiration = inspirationCount > 0;
 
@@ -336,56 +202,34 @@ CALIDAD: fotografía profesional de catálogo de alta moda — alta resolución,
 Sin texto, sin marcas de agua, sin elementos ajenos a la prenda original.`;
 }
 
-// ── Image utilities ────────────────────────────────────────────────────────────
-function saveBase64Image(base64: string, prefix = "render"): string {
+// ── Storage utilities ──────────────────────────────────────────────────────────
+async function uploadBuffer(buffer: Buffer, filename: string, mimeType = "image/jpeg"): Promise<string> {
+  const { data, error } = await supabase.storage
+    .from(BUCKET)
+    .upload(filename, buffer, { contentType: mimeType, upsert: true });
+  if (error) throw new Error(`Supabase Storage error: ${error.message}`);
+  return supabase.storage.from(BUCKET).getPublicUrl(data.path).data.publicUrl;
+}
+
+async function saveBase64Image(base64: string, prefix = "render"): Promise<string> {
   const filename = `${prefix}_${Date.now()}.jpg`;
-  const filepath = path.join(UPLOADS_DIR, filename);
-  fs.writeFileSync(filepath, Buffer.from(base64, "base64"));
-  return `/uploads/${filename}`;
+  return uploadBuffer(Buffer.from(base64, "base64"), filename);
 }
-
-function resolveUploadPath(url: string | undefined): string | undefined {
-  if (!url) return undefined;
-  const localPath = url.startsWith("/uploads/")
-    ? path.join(UPLOADS_DIR, path.basename(url))
-    : undefined;
-  return localPath && fs.existsSync(localPath) ? localPath : undefined;
-}
-
-function imagePartFromPath(filePath: string): any {
-  const data = fs.readFileSync(filePath).toString("base64");
-  const ext = path.extname(filePath).toLowerCase();
-  const mimeType = ext === ".png" ? "image/png" : ext === ".webp" ? "image/webp" : "image/jpeg";
-  return { inlineData: { mimeType, data } };
-}
-
-const PUBLIC_MODELS_DIR = path.join(process.cwd(), "public", "models");
 
 async function imagePartFromAny(source: string): Promise<any | null> {
   if (!source) return null;
-  // /uploads/ paths
-  const localPath = resolveUploadPath(source);
-  if (localPath) return imagePartFromPath(localPath);
-  // /models/ paths (pre-loaded model photos in public/models/)
-  if (source.startsWith("/models/")) {
-    const modelsPath = path.join(PUBLIC_MODELS_DIR, path.basename(source));
-    if (fs.existsSync(modelsPath)) return imagePartFromPath(modelsPath);
-  }
-  // HTTP/HTTPS URL — fetch and convert
-  if (source.startsWith("http://") || source.startsWith("https://")) {
-    try {
-      const res = await fetch(source, { signal: AbortSignal.timeout(10000) });
-      if (!res.ok) return null;
-      const buffer = await res.arrayBuffer();
-      const base64 = Buffer.from(buffer).toString("base64");
-      const ct = res.headers.get("content-type") || "image/jpeg";
-      const mimeType = ct.split(";")[0].trim();
-      return { inlineData: { mimeType, data: base64 } };
-    } catch { return null; }
-  }
-  return null;
+  if (!source.startsWith("http://") && !source.startsWith("https://")) return null;
+  try {
+    const res = await fetch(source, { signal: AbortSignal.timeout(15000) });
+    if (!res.ok) return null;
+    const buffer = await res.arrayBuffer();
+    const base64 = Buffer.from(buffer).toString("base64");
+    const ct = res.headers.get("content-type") || "image/jpeg";
+    return { inlineData: { mimeType: ct.split(";")[0].trim(), data: base64 } };
+  } catch { return null; }
 }
 
+// ── Gemini core ────────────────────────────────────────────────────────────────
 const GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image-preview";
 const GEMINI_TEXT_MODEL  = "gemini-flash-latest";
 
@@ -412,34 +256,23 @@ async function callGeminiImage(parts: any[]): Promise<string> {
   return imgPart.inlineData.data;
 }
 
-async function generateImage(prompt: string, refPaths: string[] = []): Promise<string> {
-  const existingPaths = refPaths.filter(p => fs.existsSync(p));
-  const parts: any[] = [
-    { text: prompt },
-    ...existingPaths.map(imagePartFromPath),
-  ];
-  return callGeminiImage(parts);
-}
-
 async function generateImageWithParts(prompt: string, extraParts: any[] = []): Promise<string> {
-  const parts: any[] = [{ text: prompt }, ...extraParts];
-  return callGeminiImage(parts);
+  return callGeminiImage([{ text: prompt }, ...extraParts]);
 }
 
-// ── Catalog HTML generator ─────────────────────────────────────────────────────
-function readImgAsDataUri(url: string | null | undefined): string {
-  if (!url) return "";
-  const p = resolveUploadPath(url);
-  if (!p) return "";
+// ── Catalog HTML generator (async — imágenes se obtienen de Supabase Storage) ──
+async function fetchAsDataUri(url: string | null | undefined): Promise<string> {
+  if (!url || !url.startsWith("http")) return "";
   try {
-    const b64 = fs.readFileSync(p).toString("base64");
-    const ext = path.extname(p).toLowerCase();
-    const mime = ext === ".png" ? "image/png" : "image/jpeg";
-    return `data:${mime};base64,${b64}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (!res.ok) return "";
+    const buffer = await res.arrayBuffer();
+    const ct = res.headers.get("content-type") || "image/jpeg";
+    return `data:${ct.split(";")[0].trim()};base64,${Buffer.from(buffer).toString("base64")}`;
   } catch { return ""; }
 }
 
-function generateCatalogHTML(designs: any[], allModels: any[]): string {
+async function generateCatalogHTML(designs: any[], allModels: any[]): Promise<string> {
   const now = new Date();
   const year = now.getFullYear();
   const season = now.getMonth() < 6 ? "SS" : "FW";
@@ -450,6 +283,22 @@ function generateCatalogHTML(designs: any[], allModels: any[]): string {
     acc[d.category].push(d);
     return acc;
   }, {});
+
+  // Pre-fetch all images in parallel
+  const richDesigns = await Promise.all(
+    designs.map(async (d: any) => {
+      const [heroSrc, frontSrc, backSrc, sideSrc, closeupSrc, modelSrc, outdoorSrc] = await Promise.all([
+        fetchAsDataUri(d.model_front_render_url || d.model_render_url || d.front_render_url),
+        fetchAsDataUri(d.front_render_url),
+        fetchAsDataUri(d.back_render_url),
+        fetchAsDataUri(d.side_render_url),
+        fetchAsDataUri(d.closeup_render_url),
+        fetchAsDataUri(d.model_front_render_url || d.model_render_url),
+        fetchAsDataUri(d.outdoor_model_front_render_url),
+      ]);
+      return { ...d, heroSrc, frontSrc, backSrc, sideSrc, closeupSrc, modelSrc, outdoorSrc };
+    })
+  );
 
   const coverHTML = `
 <div class="page cover">
@@ -464,16 +313,9 @@ function generateCatalogHTML(designs: any[], allModels: any[]): string {
   <div class="cover-foot">© ALMEJA STUDIO // NUCLEO_IA_V3.0 // ${year}</div>
 </div>`;
 
-  const designPages = designs.map((d: any, i: number) => {
+  const designPages = richDesigns.map((d: any, i: number) => {
     const modelInfo = allModels.find((m: any) => m.id === d.model_id);
-
-    const heroSrc = readImgAsDataUri(d.model_front_render_url || d.model_render_url || d.front_render_url);
-    const frontSrc = readImgAsDataUri(d.front_render_url);
-    const backSrc = readImgAsDataUri(d.back_render_url);
-    const sideSrc = readImgAsDataUri(d.side_render_url);
-    const closeupSrc = readImgAsDataUri(d.closeup_render_url);
-    const modelSrc = readImgAsDataUri(d.model_front_render_url || d.model_render_url);
-    const outdoorSrc = readImgAsDataUri(d.outdoor_model_front_render_url);
+    const { heroSrc, frontSrc, backSrc, sideSrc, closeupSrc, modelSrc, outdoorSrc } = d;
 
     const thumb = (src: string, label: string) => src
       ? `<div class="thumb"><img src="${src}" alt="${label}"/><span>${label}</span></div>`
@@ -505,25 +347,21 @@ function generateCatalogHTML(designs: any[], allModels: any[]): string {
       <h1 class="sp-name">${d.name}</h1>
       <div class="accent-bar"></div>
     </div>
-
     ${d.prompt ? `
     <div class="info-sec">
       <div class="info-label">Descripción Técnica</div>
       <p class="info-text">"${d.prompt}"</p>
     </div>` : ""}
-
     ${modelInfo ? `
     <div class="info-sec">
       <div class="info-label">Modelo de Identidad</div>
       <p class="info-val">${modelInfo.name}</p>
     </div>` : ""}
-
     ${secondaryThumbs ? `
     <div class="info-sec">
       <div class="info-label">Vistas del Proyecto</div>
       <div class="thumbs">${secondaryThumbs}</div>
     </div>` : ""}
-
     <div class="sp-foot">
       <span>ALMEJA STUDIO // ${season}${year}</span>
       <span class="pg-num">${i + 1} / ${total}</span>
@@ -532,8 +370,7 @@ function generateCatalogHTML(designs: any[], allModels: any[]): string {
 </div>`;
   }).join("\n");
 
-  // Index page
-  const indexRows = designs.map((d: any, i: number) => `
+  const indexRows = richDesigns.map((d: any, i: number) => `
   <div class="idx-row">
     <span class="idx-num">${String(i + 1).padStart(2, "0")}</span>
     <span class="idx-name">${d.name}</span>
@@ -552,7 +389,7 @@ function generateCatalogHTML(designs: any[], allModels: any[]): string {
   <div class="idx-cat-group">
     <div class="idx-cat-head">${cat}</div>
     ${items.map((d: any) => {
-      const globalIdx = designs.findIndex((x: any) => x.id === d.id);
+      const globalIdx = richDesigns.findIndex((x: any) => x.id === d.id);
       return `<div class="idx-row">
         <span class="idx-num">${String(globalIdx + 1).padStart(2, "0")}</span>
         <span class="idx-name">${d.name}</span>
@@ -582,9 +419,7 @@ body{font-family:'Inter',sans-serif;background:#e8e8e8;color:#1a1a1a;padding-top
 .pbtn:hover{background:#fff;}
 .pbtn-sec{background:transparent;color:#666;border:1px solid #333;padding:8px 16px;font-size:9px;letter-spacing:.15em;text-transform:uppercase;cursor:pointer;font-family:'Inter',sans-serif;}
 .pbtn-sec:hover{color:#fff;border-color:#666;}
-/* Page base */
 .page{width:210mm;min-height:297mm;background:#fff;margin:24px auto;box-shadow:0 8px 60px rgba(0,0,0,.2);position:relative;overflow:hidden;}
-/* Cover */
 .cover{background:#0a0a0a;display:flex;flex-direction:column;align-items:center;justify-content:center;}
 .cover-inner{text-align:center;color:#fff;padding:60px 40px;flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;}
 .logo-mark{width:80px;height:80px;background:#E0FF00;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:52px;font-weight:900;font-style:italic;color:#000;margin-bottom:36px;box-shadow:0 0 60px rgba(224,255,0,.25);}
@@ -594,7 +429,6 @@ body{font-family:'Inter',sans-serif;background:#e8e8e8;color:#1a1a1a;padding-top
 .tagline{font-size:9px;letter-spacing:.35em;text-transform:uppercase;color:#444;margin-bottom:12px;}
 .count{font-size:9px;letter-spacing:.2em;color:#333;text-transform:uppercase;}
 .cover-foot{padding:24px 40px;font-size:8px;letter-spacing:.2em;color:#333;text-transform:uppercase;text-align:center;border-top:1px solid #111;}
-/* Index */
 .index-page{padding:60px 56px;}
 .idx-header{margin-bottom:48px;}
 .idx-title{font-family:'Cormorant Garamond',serif;font-size:36px;font-style:italic;color:#1a1a1a;margin-bottom:8px;}
@@ -607,7 +441,6 @@ body{font-family:'Inter',sans-serif;background:#e8e8e8;color:#1a1a1a;padding-top
 .idx-cat{font-size:9px;color:#aaa;text-transform:uppercase;letter-spacing:.1em;flex-shrink:0;}
 .idx-dots{flex:1;overflow:hidden;color:#ddd;font-size:9px;letter-spacing:.2em;}
 .idx-pg{font-size:11px;color:#333;flex-shrink:0;width:24px;text-align:right;}
-/* Design spread */
 .spread{display:grid;grid-template-columns:1fr 1fr;min-height:297mm;}
 .sp-left{position:relative;background:#f4f4f4;overflow:hidden;display:flex;align-items:center;justify-content:center;}
 .hero-img{width:100%;height:100%;object-fit:contain;display:block;}
@@ -658,17 +491,41 @@ ${designPages}
 // ── Server startup ─────────────────────────────────────────────────────────────
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = parseInt(process.env.PORT || "3000", 10);
 
   app.use(cors());
   app.use(express.json());
-  app.use("/uploads", express.static(UPLOADS_DIR));
-  app.use("/models", express.static(PUBLIC_MODELS_DIR));
+
+  // ── Seed initial data (idempotente — solo inserta si está vacío) ─────────────
+  const { data: existingModels } = await supabase.from("models").select("id").limit(1);
+  if (!existingModels || existingModels.length === 0) {
+    await supabase.from("models").insert([
+      { id: "m1", name: "Modelo Latina 1 — Cabello oscuro, Talla S", preview_url: "" },
+      { id: "m2", name: "Modelo Rubia 1 — Cabello rubio, Talla S", preview_url: "" },
+    ]);
+  }
+
+  const { data: existingFabrics } = await supabase.from("fabrics").select("id").limit(1);
+  if (!existingFabrics || existingFabrics.length === 0) {
+    await supabase.from("fabrics").insert([
+      { id: "f1", name: "Lycra Mate Premium", material: "Poliamida/Elastano", color: "#1a1a1a", elasticity: 0.85, finish: "mate", is_custom: 0 },
+      { id: "f2", name: "Jacquard Texturizado", material: "Poliéster Reciclado", color: "#e5e5e5", elasticity: 0.40, finish: "texturizado", is_custom: 0 },
+      { id: "f3", name: "Powernet Control", material: "Nailon Reforzado", color: "#d1d5db", elasticity: 0.20, finish: "mate", is_custom: 0 },
+      { id: "f4", name: "Satin Swim Luxe", material: "Microfibra Brillante", color: "#c9d1d9", elasticity: 0.70, finish: "satinado", is_custom: 0 },
+    ]);
+  }
 
   // ── File Upload ──────────────────────────────────────────────────────────────
-  app.post("/api/upload", upload.single("file"), (req: any, res: any) => {
+  app.post("/api/upload", upload.single("file"), async (req: any, res: any) => {
     if (!req.file) return res.status(400).json({ error: "No se recibió archivo." });
-    res.json({ url: `/uploads/${req.file.filename}` });
+    try {
+      const ext = path.extname(req.file.originalname).toLowerCase() || ".jpg";
+      const filename = `${Date.now()}-${Math.random().toString(36).substr(2, 6)}${ext}`;
+      const url = await uploadBuffer(req.file.buffer, filename, req.file.mimetype);
+      res.json({ url });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // ── List available Gemini models ─────────────────────────────────────────────
@@ -712,36 +569,25 @@ async function startServer() {
 
   // ── Generate ghost mannequin render ─────────────────────────────────────────
   app.post("/api/generate/ghost", async (req: any, res: any) => {
-    // Accept both single URLs (legacy) and arrays (new multi-file)
     const {
       prompt,
       view = "front",
       frontRenderUrl,
-      // Multi-file arrays (new)
       sketchUrls = [] as string[],
       inspirationUrls = [] as string[],
-      // Legacy single-URL fallbacks
       sketchUrl,
       inspirationUrl,
     } = req.body;
     if (!prompt) return res.status(400).json({ error: "Falta el prompt." });
 
     try {
-      // Merge legacy + array (dedupe)
       const allSketchUrls: string[] = [...new Set([...(sketchUrl ? [sketchUrl] : []), ...sketchUrls])];
       const allInspirationUrls: string[] = [...new Set([...(inspirationUrl ? [inspirationUrl] : []), ...inspirationUrls])];
 
-      // Resolve all sketch paths
-      const sketchParts: any[] = allSketchUrls
-        .map(u => resolveUploadPath(u))
-        .filter(Boolean)
-        .map(p => imagePartFromPath(p!));
-
-      // Resolve all inspiration paths
-      const inspirationParts: any[] = allInspirationUrls
-        .map(u => resolveUploadPath(u))
-        .filter(Boolean)
-        .map(p => imagePartFromPath(p!));
+      const [sketchParts, inspirationParts] = await Promise.all([
+        Promise.all(allSketchUrls.map(u => imagePartFromAny(u))).then(ps => ps.filter(Boolean)),
+        Promise.all(allInspirationUrls.map(u => imagePartFromAny(u))).then(ps => ps.filter(Boolean)),
+      ]);
 
       const hasFrontRef = !!frontRenderUrl && view !== "front";
       const frontRefPart = hasFrontRef ? await imagePartFromAny(frontRenderUrl) : null;
@@ -752,7 +598,6 @@ async function startServer() {
         hasFrontRef: !!frontRefPart,
       });
 
-      // Order: text → front ref (anchor) → sketches → inspirations
       const parts: any[] = [
         { text: fullPrompt },
         ...(frontRefPart ? [frontRefPart] : []),
@@ -761,7 +606,7 @@ async function startServer() {
       ];
 
       const base64 = await callGeminiImage(parts);
-      const url = saveBase64Image(base64, `ghost_${view}`);
+      const url = await saveBase64Image(base64, `ghost_${view}`);
       res.json({ url });
     } catch (err: any) {
       console.error("Ghost generation error:", err.message, err?.cause);
@@ -769,7 +614,7 @@ async function startServer() {
     }
   });
 
-  // ── Generate model render (per-view + per-environment) ───────────────────────
+  // ── Generate model render ────────────────────────────────────────────────────
   app.post("/api/generate/model", async (req: any, res: any) => {
     const {
       prompt,
@@ -783,20 +628,19 @@ async function startServer() {
     if (!prompt) return res.status(400).json({ error: "Falta el prompt." });
 
     try {
-      // GHOST FIRST (garment design lock), IDENTITY SECOND (face/body lock)
-      const ghostPath = resolveUploadPath(ghostRenderUrl);
-      const ghostPart = ghostPath ? imagePartFromPath(ghostPath) : null;
-      const identityPart = identityAnchorUrl ? await imagePartFromAny(identityAnchorUrl) : null;
+      const [ghostPart, identityPart] = await Promise.all([
+        ghostRenderUrl ? imagePartFromAny(ghostRenderUrl) : Promise.resolve(null),
+        identityAnchorUrl ? imagePartFromAny(identityAnchorUrl) : Promise.resolve(null),
+      ]);
 
-      const hasIdentityAnchor = !!identityPart;
       const extraParts: any[] = [
         ...(ghostPart ? [ghostPart] : []),
         ...(identityPart ? [identityPart] : []),
       ];
 
-      const fullPrompt = buildModelPrompt(prompt, modelName || "modelo profesional", view, environment, hasIdentityAnchor, category);
+      const fullPrompt = buildModelPrompt(prompt, modelName || "modelo profesional", view, environment, !!identityPart, category);
       const base64 = await generateImageWithParts(fullPrompt, extraParts);
-      const url = saveBase64Image(base64, `model_${environment}_${view}`);
+      const url = await saveBase64Image(base64, `model_${environment}_${view}`);
       res.json({ url });
     } catch (err: any) {
       console.error("Model generation error:", err.message);
@@ -809,10 +653,10 @@ async function startServer() {
     const { baseRenderUrl, prompt, fabricName, fabricColor, fabricMaterial, fabricFinish } = req.body;
     if (!baseRenderUrl || !fabricName) return res.status(400).json({ error: "Faltan parámetros: baseRenderUrl y fabricName son requeridos." });
 
-    const basePath = resolveUploadPath(baseRenderUrl);
-    if (!basePath) return res.status(400).json({ error: "Render base no encontrado en el servidor." });
-
     try {
+      const basePart = await imagePartFromAny(baseRenderUrl);
+      if (!basePart) return res.status(400).json({ error: "Render base no accesible desde la URL proporcionada." });
+
       const variantPrompt = `INSTRUCCIÓN CRÍTICA — EDICIÓN DE MATERIAL TEXTIL ÚNICAMENTE:
 
 Estás editando una imagen existente de una prenda de moda. La imagen adjunta es la REFERENCIA BASE.
@@ -834,8 +678,8 @@ Contexto de la prenda original: ${prompt || "prenda de swimwear/activewear"}
 
 El resultado debe verse como la misma fotografía con el mismo encuadre, pose e iluminación, pero con el tejido cambiado. Calidad fotorrealista de catálogo profesional.`;
 
-      const base64 = await generateImage(variantPrompt, [basePath]);
-      const url = saveBase64Image(base64, "variant");
+      const base64 = await callGeminiImage([{ text: variantPrompt }, basePart]);
+      const url = await saveBase64Image(base64, "variant");
       res.json({ url });
     } catch (err: any) {
       console.error("Variant generation error:", err.message);
@@ -843,17 +687,17 @@ El resultado debe verse como la misma fotografía con el mismo encuadre, pose e 
     }
   });
 
-  // ── Edit single view with text instructions ─────────────────────────────────
+  // ── Edit single view with text instructions ──────────────────────────────────
   app.post("/api/generate/edit", async (req: any, res: any) => {
     const { baseRenderUrl, editInstructions, prompt, view = "front" } = req.body;
     if (!baseRenderUrl || !editInstructions) {
       return res.status(400).json({ error: "Faltan parámetros: baseRenderUrl y editInstructions son requeridos." });
     }
 
-    const basePath = resolveUploadPath(baseRenderUrl);
-    if (!basePath) return res.status(400).json({ error: "Imagen base no encontrada en el servidor." });
-
     try {
+      const basePart = await imagePartFromAny(baseRenderUrl);
+      if (!basePart) return res.status(400).json({ error: "Imagen base no accesible desde la URL proporcionada." });
+
       const editPrompt = `INSTRUCCIÓN DE EDICIÓN PUNTUAL — FOTOGRAFÍA DE MODA SWIMWEAR:
 
 Estás editando una imagen existente de una prenda de swimwear/activewear. La imagen adjunta es la REFERENCIA BASE que debes modificar.
@@ -873,8 +717,8 @@ Vista: ${view}
 
 Resultado: imagen fotorrealista editada de alta calidad, con ÚNICAMENTE los cambios solicitados aplicados y todo lo demás idéntico a la referencia.`;
 
-      const base64 = await generateImage(editPrompt, [basePath]);
-      const url = saveBase64Image(base64, `edit_${view}`);
+      const base64 = await callGeminiImage([{ text: editPrompt }, basePart]);
+      const url = await saveBase64Image(base64, `edit_${view}`);
       res.json({ url });
     } catch (err: any) {
       console.error("Edit generation error:", err.message);
@@ -883,140 +727,190 @@ Resultado: imagen fotorrealista editada de alta calidad, con ÚNICAMENTE los cam
   });
 
   // ── Designs CRUD ─────────────────────────────────────────────────────────────
-  app.get("/api/designs", (_req: any, res: any) => {
-    const designs = db.prepare("SELECT * FROM designs ORDER BY created_at DESC").all();
-    res.json(designs);
+  app.get("/api/designs", async (_req: any, res: any) => {
+    const { data, error } = await supabase.from("designs").select("*").order("created_at", { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
   });
 
-  app.post("/api/designs", (req: any, res: any) => {
+  app.post("/api/designs", async (req: any, res: any) => {
     const { id, name, category, prompt, model_id, technical_sketch_url, inspiration_url, sketch_urls, inspiration_urls } = req.body;
-    db.prepare(`INSERT INTO designs (id, name, category, prompt, model_id, view_mode, technical_sketch_url, inspiration_url, sketch_urls, inspiration_urls)
-                VALUES (?, ?, ?, ?, ?, 'ghost', ?, ?, ?, ?)`)
-      .run(id, name, category, prompt, model_id,
-        technical_sketch_url || null, inspiration_url || null,
-        sketch_urls || null, inspiration_urls || null);
+    const { error } = await supabase.from("designs").insert({
+      id, name, category,
+      prompt: prompt || null,
+      model_id: model_id || null,
+      view_mode: "ghost",
+      technical_sketch_url: technical_sketch_url || null,
+      inspiration_url: inspiration_url || null,
+      sketch_urls: sketch_urls || null,
+      inspiration_urls: inspiration_urls || null,
+    });
+    if (error) return res.status(500).json({ error: error.message });
     res.json({ success: true });
   });
 
-  app.delete("/api/designs/:id", (req: any, res: any) => {
+  app.delete("/api/designs/:id", async (req: any, res: any) => {
     const { id } = req.params;
-    db.prepare("DELETE FROM design_versions WHERE design_id = ?").run(id);
-    db.prepare("DELETE FROM designs WHERE id = ?").run(id);
+    await supabase.from("design_versions").delete().eq("design_id", id);
+    const { error } = await supabase.from("designs").delete().eq("id", id);
+    if (error) return res.status(500).json({ error: error.message });
     res.json({ success: true });
   });
 
-  app.patch("/api/designs/:id", (req: any, res: any) => {
+  app.patch("/api/designs/:id", async (req: any, res: any) => {
     const { id } = req.params;
     const allowed = [
       "render_url", "front_render_url", "back_render_url", "side_render_url",
       "closeup_render_url", "model_render_url", "view_mode", "status", "prompt",
       "technical_sketch_url", "inspiration_url", "sketch_urls", "inspiration_urls",
-      // Per-view model renders — studio
       "model_front_render_url", "model_back_render_url", "model_side_render_url", "model_closeup_render_url",
-      // Per-view model renders — outdoor
       "outdoor_model_front_render_url", "outdoor_model_back_render_url",
       "outdoor_model_side_render_url", "outdoor_model_closeup_render_url",
     ];
-    const updates: string[] = [];
-    const values: any[] = [];
+    const updateData: Record<string, any> = {};
     for (const key of allowed) {
-      if (req.body[key] !== undefined) {
-        updates.push(`${key} = ?`);
-        values.push(req.body[key]);
-      }
+      if (req.body[key] !== undefined) updateData[key] = req.body[key];
     }
-    if (updates.length === 0) return res.status(400).json({ error: "Nada que actualizar." });
-    values.push(id);
-    db.prepare(`UPDATE designs SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+    if (Object.keys(updateData).length === 0) return res.status(400).json({ error: "Nada que actualizar." });
+    const { error } = await supabase.from("designs").update(updateData).eq("id", id);
+    if (error) return res.status(500).json({ error: error.message });
     res.json({ success: true });
   });
 
-  app.get("/api/designs/:id/versions", (req: any, res: any) => {
-    const versions = db.prepare(
-      "SELECT * FROM design_versions WHERE design_id = ? ORDER BY version_number DESC"
-    ).all(req.params.id);
-    res.json(versions);
+  app.get("/api/designs/:id/versions", async (req: any, res: any) => {
+    const { data, error } = await supabase
+      .from("design_versions")
+      .select("*")
+      .eq("design_id", req.params.id)
+      .order("version_number", { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
   });
 
-  app.post("/api/designs/:id/versions", (req: any, res: any) => {
+  app.post("/api/designs/:id/versions", async (req: any, res: any) => {
     const { id } = req.params;
     const { prompt, image_url, type = "ghost", view = "front" } = req.body;
-    const row = db.prepare("SELECT MAX(version_number) as max_v FROM design_versions WHERE design_id = ?").get(id) as any;
-    const nextV = (row?.max_v ?? 0) + 1;
-    const vId = `v_${id}_${nextV}`;
-    db.prepare("INSERT INTO design_versions (id, design_id, version_number, prompt, image_url, type, view) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(vId, id, nextV, prompt, image_url, type, view);
+    const { data: maxData } = await supabase
+      .from("design_versions")
+      .select("version_number")
+      .eq("design_id", id)
+      .order("version_number", { ascending: false })
+      .limit(1);
+    const nextV = ((maxData?.[0]?.version_number) ?? 0) + 1;
+    const { error } = await supabase.from("design_versions").insert({
+      id: `v_${id}_${nextV}`,
+      design_id: id,
+      version_number: nextV,
+      prompt,
+      image_url,
+      type,
+      view,
+    });
+    if (error) return res.status(500).json({ error: error.message });
     res.json({ success: true, version_number: nextV });
   });
 
   // Legacy routes kept for compatibility
-  app.post("/api/designs/:id/mode", (req: any, res: any) => {
+  app.post("/api/designs/:id/mode", async (req: any, res: any) => {
     const { mode, render_url, prompt } = req.body;
     const { id } = req.params;
-    db.prepare("UPDATE designs SET view_mode = ?, render_url = ? WHERE id = ?").run(mode, render_url, id);
-    const row = db.prepare("SELECT MAX(version_number) as max_v FROM design_versions WHERE design_id = ?").get(id) as any;
-    const nextV = (row?.max_v ?? 0) + 1;
-    db.prepare("INSERT INTO design_versions (id, design_id, version_number, prompt, image_url, type) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(`v_${id}_${nextV}`, id, nextV, prompt, render_url, mode);
+    await supabase.from("designs").update({ view_mode: mode, render_url }).eq("id", id);
+    const { data: maxData } = await supabase
+      .from("design_versions")
+      .select("version_number")
+      .eq("design_id", id)
+      .order("version_number", { ascending: false })
+      .limit(1);
+    const nextV = ((maxData?.[0]?.version_number) ?? 0) + 1;
+    await supabase.from("design_versions").insert({
+      id: `v_${id}_${nextV}`, design_id: id, version_number: nextV, prompt, image_url: render_url, type: mode,
+    });
     res.json({ success: true });
   });
 
-  app.post("/api/designs/:id/render", (req: any, res: any) => {
+  app.post("/api/designs/:id/render", async (req: any, res: any) => {
     const { render_url } = req.body;
-    db.prepare("UPDATE designs SET render_url = ? WHERE id = ?").run(render_url, req.params.id);
+    await supabase.from("designs").update({ render_url }).eq("id", req.params.id);
     res.json({ success: true });
   });
 
   // ── Models CRUD ───────────────────────────────────────────────────────────────
-  app.get("/api/models", (_req: any, res: any) => {
-    res.json(db.prepare("SELECT * FROM models").all());
+  app.get("/api/models", async (_req: any, res: any) => {
+    const { data, error } = await supabase.from("models").select("*");
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
   });
 
-  app.post("/api/models", (req: any, res: any) => {
+  app.post("/api/models", async (req: any, res: any) => {
     const { id, name, preview_url } = req.body;
-    db.prepare("INSERT INTO models (id, name, preview_url) VALUES (?, ?, ?)").run(id, name, preview_url);
+    const { error } = await supabase.from("models").insert({ id, name, preview_url });
+    if (error) return res.status(500).json({ error: error.message });
     res.json({ success: true });
   });
 
-  app.delete("/api/models/:id", (req: any, res: any) => {
-    db.prepare("DELETE FROM models WHERE id = ?").run(req.params.id);
+  app.delete("/api/models/:id", async (req: any, res: any) => {
+    const { error } = await supabase.from("models").delete().eq("id", req.params.id);
+    if (error) return res.status(500).json({ error: error.message });
     res.json({ success: true });
   });
 
   // ── Fabrics CRUD ──────────────────────────────────────────────────────────────
-  app.get("/api/fabrics", (_req: any, res: any) => {
-    res.json(db.prepare("SELECT * FROM fabrics ORDER BY is_custom ASC, name ASC").all());
+  app.get("/api/fabrics", async (_req: any, res: any) => {
+    const { data, error } = await supabase.from("fabrics").select("*").order("is_custom").order("name");
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data || []);
   });
 
-  app.post("/api/fabrics", upload.single("file"), (req: any, res: any) => {
+  app.post("/api/fabrics", upload.single("file"), async (req: any, res: any) => {
     const { id, name, material, color, elasticity, finish } = req.body;
     if (!id || !name) return res.status(400).json({ error: "Faltan campos requeridos (id, name)." });
 
-    const fileUrl = req.file ? `/uploads/${req.file.filename}` : null;
-    db.prepare(`INSERT INTO fabrics (id, name, material, color, file_url, elasticity, finish, is_custom)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1)`)
-      .run(id, name, material || "", color || "#ffffff", fileUrl, parseFloat(elasticity) || 0.5, finish || "mate");
+    let fileUrl: string | null = null;
+    if (req.file) {
+      try {
+        const ext = path.extname(req.file.originalname).toLowerCase() || ".jpg";
+        const filename = `fabric_${Date.now()}${ext}`;
+        fileUrl = await uploadBuffer(req.file.buffer, filename, req.file.mimetype);
+      } catch (err: any) {
+        return res.status(500).json({ error: `Error subiendo archivo: ${err.message}` });
+      }
+    }
+
+    const { error } = await supabase.from("fabrics").insert({
+      id, name,
+      material: material || "",
+      color: color || "#ffffff",
+      file_url: fileUrl,
+      elasticity: parseFloat(elasticity) || 0.5,
+      finish: finish || "mate",
+      is_custom: 1,
+    });
+    if (error) return res.status(500).json({ error: error.message });
     res.json({ success: true, file_url: fileUrl });
   });
 
-  app.delete("/api/fabrics/:id", (req: any, res: any) => {
+  app.delete("/api/fabrics/:id", async (req: any, res: any) => {
     const { id } = req.params;
-    const fabric = db.prepare("SELECT * FROM fabrics WHERE id = ?").get(id) as any;
+    const { data: fabric } = await supabase.from("fabrics").select("*").eq("id", id).single();
     if (!fabric) return res.status(404).json({ error: "Material no encontrado." });
 
-    if (fabric.file_url) {
-      const filePath = resolveUploadPath(fabric.file_url);
-      if (filePath) { try { fs.unlinkSync(filePath); } catch (_) {} }
+    if (fabric.file_url?.startsWith("http")) {
+      try {
+        const urlObj = new URL(fabric.file_url);
+        const pathParts = urlObj.pathname.split(`/object/public/${BUCKET}/`);
+        if (pathParts[1]) await supabase.storage.from(BUCKET).remove([pathParts[1]]);
+      } catch (_) {}
     }
-    db.prepare("DELETE FROM fabrics WHERE id = ?").run(id);
+
+    await supabase.from("fabrics").delete().eq("id", id);
     res.json({ success: true });
   });
 
   // ── Catalog generation ────────────────────────────────────────────────────────
-  app.get("/api/catalog", (_req: any, res: any) => {
-    const designs = db.prepare("SELECT * FROM designs ORDER BY category ASC, created_at ASC").all() as any[];
-    const models = db.prepare("SELECT * FROM models").all() as any[];
-    const html = generateCatalogHTML(designs, models);
+  app.get("/api/catalog", async (_req: any, res: any) => {
+    const { data: designs } = await supabase.from("designs").select("*").order("category").order("created_at");
+    const { data: models } = await supabase.from("models").select("*");
+    const html = await generateCatalogHTML(designs || [], models || []);
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.send(html);
   });

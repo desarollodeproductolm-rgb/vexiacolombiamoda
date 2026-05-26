@@ -247,6 +247,9 @@ export default function App() {
   const [isEditingName, setIsEditingName] = useState(false);
   const [editingName, setEditingName] = useState('');
 
+  // Inline category change
+  const [isEditingCategory, setIsEditingCategory] = useState(false);
+
   // Mobile UI
   const [isMobileDrawerOpen, setMobileDrawerOpen] = useState(false);
 
@@ -857,6 +860,13 @@ export default function App() {
   const handleChangeDesignModel = async (modelId: string) => {
     if (!selectedDesign || selectedDesign.model_id === modelId) return;
     await apiPatchDesign(selectedDesign.id, { model_id: modelId } as any);
+    await fetchDesigns();
+  };
+
+  const handleChangeDesignCategory = async (category: Category) => {
+    if (!selectedDesign || selectedDesign.category === category) { setIsEditingCategory(false); return; }
+    await apiPatchDesign(selectedDesign.id, { category } as any);
+    setIsEditingCategory(false);
     await fetchDesigns();
   };
 
@@ -1793,8 +1803,28 @@ export default function App() {
                       </button>
                     </div>
                   )}
-                  <div className="mt-3 flex gap-2 flex-wrap">
-                    <span className="text-[8px] px-2 py-0.5 border border-border-secondary text-text-muted uppercase tracking-widest">{selectedDesign.category}</span>
+                  <div className="mt-3 flex gap-2 flex-wrap items-center">
+                    {isEditingCategory ? (
+                      <select
+                        autoFocus
+                        value={selectedDesign.category}
+                        onChange={(e: ChangeEvent<HTMLSelectElement>) => handleChangeDesignCategory(e.target.value as Category)}
+                        onBlur={() => setIsEditingCategory(false)}
+                        className="text-[8px] px-2 py-0.5 bg-bg-main border border-brand text-white uppercase tracking-widest outline-none cursor-pointer"
+                      >
+                        {CATEGORIES.map(c => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
+                    ) : (
+                      <button
+                        onClick={() => setIsEditingCategory(true)}
+                        className="text-[8px] px-2 py-0.5 border border-border-secondary text-text-muted uppercase tracking-widest hover:border-brand hover:text-brand transition-colors"
+                        title="Cambiar colección"
+                      >
+                        {selectedDesign.category}
+                      </button>
+                    )}
                     <span className="text-[8px] px-2 py-0.5 border border-brand text-brand uppercase tracking-widest">Ref. Maestra</span>
                   </div>
                 </div>
